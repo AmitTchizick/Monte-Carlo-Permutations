@@ -1,0 +1,203 @@
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import numpy as np
+import pandas as pd
+from scipy.optimize import fmin
+from scipy.stats import gaussian_kde
+from scipy import stats
+
+# Function to calculate the Highest Density Interval (HDI) using the inverse cumulative distribution function
+def HDIofICDF(dist_name, credMass=0.95, **args):
+    distri = dist_name(**args)
+    incredMass = 1.0 - credMass
+
+    def intervalWidth(lowTailPr):
+        return distri.ppf(credMass + lowTailPr) - distri.ppf(lowTailPr)
+
+    HDIlowTailPr = fmin(intervalWidth, incredMass, ftol=1e-8, disp=False)[0]
+    return distri.ppf([HDIlowTailPr, credMass + HDIlowTailPr])
+
+# Function to calculate the HDI using Kernel Density Estimation (KDE)
+def HDIofKDE(permuted_means, kde, credMass=0.95, num_pts=1000):
+    x = np.linspace(min(permuted_means), max(permuted_means), num_pts)
+    pdf = kde.pdf(x)
+
+    cdf = np.cumsum(pdf) / np.sum(pdf)
+
+    low_idx = np.where(cdf < (1 - credMass) / 2)[0][-1]
+    high_idx = np.where(cdf < 1 - (1 - credMass) / 2)[0][-1]
+
+    hdi = x[low_idx], x[high_idx]
+
+    kde_hdi = pdf[(x >= hdi[0]) & (x <= hdi[1])]
+
+    return hdi, kde_hdi
+
+# Function to calculate Cohen's d effect size
+def calculate_cohens_d(observed_mean, permuted_means):
+    mean_permuted = np.mean(permuted_means)
+    pooled_std = np.sqrt((np.var(permuted_means, ddof=1) + np.var(permuted_means, ddof=1)) / 2)
+    return (observed_mean - mean_permuted) / pooled_std
+
+# Load data
+data = pd.read_csv(r'/content/sample_data/RMSSD.csv')
+
+# Define condition names
+condition_names = {
+    0: 'Buffer',
+    1: 'Withdrawal Ruptures',
+    2: 'Confrontation Ruptures',
+    3: 'Emotional Episodes',
+    4: 'Neutral Episodes'
+}
+
+# Dictionary to store data for patients and therapists
+groups = {'patient': [], 'therapist': []}
+
+# Initialize combined data arrays
+combined_data = {'patient': [], 'therapist': []}
+
+# Iterate over groups and conditions, and combine data
+for group in groups:
+    for condition in range(5):
+        group_data = data[(data['type'] == condition) & (data[group].notna())]
+        if not group_data.empty:
+            values = group_data[group].values
+            groups[group].append(values)
+            combined_data[group].append(values)
+            print(f"Number of observations in {group.capitalize()} - {condition_names[condition]}: {len(values)}")
+        else:
+            print(f"No data found for group '{group}' and condition '{condition}'")
+
+# Concatenate the combined data arrays
+combined_data = {'patient': np.concatenate(combined_data['patient']),
+                 'therapist': np.concatenate(combined_data['therapist'])}
+
+# Number of permutations
+num_permutations = 10000
+
+# Confidence level for Confidence Intervals (CI) and Highest Density Intervals (HDI)
+confidence_level = 0.90
+alpha = (1 - confidence_level)
+
+# Define number of points for KDE
+num_pts = 1000
+
+# Create subplots for CI and HDI
+fig_ci, axs_ci = plt.subplots(4, 4, figsize=(16, 12), sharex=True, sharey=True, gridspec_kw={'hspace': 0.5, 'wspace': 0.3})
+fig_ci.suptitle("Permutation Distributions", fontsize=16)
+
+fig_hdi, axs_hdi = plt.subplots(4, 4, figsize=(16, 12), sharex=True, sharey=True, gridspec_kw={'hspace': 0.5, 'wspace': 0})
+fig_hdi.suptitle("HDI Plots", fontsize=16)
+
+# Iterate over groups and conditions to calculate and plot CI and HDI
+for group_idx, group in enumerate(groups):
+    for i in range(1, 5):
+        observed_means_condition = []  # Store observed means for each condition
+        permuted_means_condition = []  # Store permuted means for each condition
+
+        # Calculate the observed mean for the current condition
+        observed_mean = np.mean(groups[group][i])
+        observed_means_condition.append(observed_mean)
+
+        # Perform permutations for the current condition
+        for _ in range(num_permutations):
+            permuted_data = np.random.permutation(combined_data[group])
+            permuted_mean = np.mean(permuted_data[:len(groups[group][i])])
+            permuted_means_condition.append(permuted_mean)
+
+        # Calculate observed mean's percentile within the permuted means distribution
+        observed_mean_percentile = 100 * stats.percentileofscore(permuted_means_condition, observed_mean)
+
+        # Calculate lower and upper bounds of the new 90% CI for the current condition
+        lower_bound = np.percentile(permuted_means_condition, (1 - confidence_level) * 100 / 2)
+        upper_bound = np.percentile(permuted_means_condition, (1 + confidence_level) * 100 / 2)
+
+        # Plot CI
+        axs_ci[group_idx, i - 1].hist(permuted_means_condition, bins=50, color='gray', alpha=0.7, label=None, edgecolor='black')
+        axs_ci[group_idx, i - 1].axvline(observed_mean, color='black', linestyle='dashed', linewidth=2, label=f'Observed Mean: {observed_mean:.2f}')
+        axs_ci[group_idx, i - 1].axvline(lower_bound, color='black', linestyle='dotted', linewidth=2, label=None)
+        axs_ci[group_idx, i - 1].axvline(upper_bound, color='black', linestyle='dashdot', linewidth=2, label=None)
+
+        # Calculate HDI using KDE based on permuted means
+        kde = gaussian_kde(permuted_means_condition)
+        hdi, kde_hdi = HDIofKDE(permuted_means_condition, kde, credMass=confidence_level, num_pts=1000)
+
+        # Calculate p-value and Cohen's d
+        p_value = 2 * min(stats.percentileofscore(permuted_means_condition, observed_mean) / 100, (100 - stats.percentileofscore(permuted_means_condition, observed_mean)) / 100)
+        cohen_d = calculate_cohens_d(observed_mean, permuted_means_condition)
+
+        # Print results and p-value
+        print(f'Observed Mean for {group.capitalize()} - {condition_names[i]}: {observed_mean:.4f}')
+        print(f'HDI for {group.capitalize()} - {condition_names[i]}: ({hdi[0]:.4f}, {hdi[1]:.4f})')
+        print(f'P-Value for {group.capitalize()} - {condition_names[i]}: {p_value}')
+        print(f"Cohen's d for {group.capitalize()} - {condition_names[i]}: {cohen_d:.4f}")
+
+        # Check if observed mean is statistically significant
+        if p_value < alpha:
+            print(f'The observed mean is statistically more extreme than the HDI at the {confidence_level * 100}% confidence level.')
+        else:
+            print(f'The observed mean is not statistically more extreme than the HDI at the {confidence_level * 100}% confidence level.')
+
+        # Plot HDI
+        axs_hdi[group_idx, i - 1].hist(permuted_means_condition, bins=50, color='gray', alpha=0.7, label=None, density=True, edgecolor='black')
+        axs_hdi[group_idx, i - 1].axvline(observed_mean, color='black', linestyle='solid', linewidth=2, label=f'Observed Mean: {observed_mean:.2f}')
+
+        # Rescale KDE HDI for proper density representation
+        x_hdi = np.linspace(hdi[0], hdi[1], num_pts)
+        kde_hdi_resampled = kde.pdf(x_hdi)
+        area = np.trapz(kde_hdi_resampled, x_hdi)
+        kde_hdi_resampled /= area
+
+        # Plot filled area for HDI
+        axs_hdi[group_idx, i - 1].fill_between(x_hdi, kde_hdi_resampled, 0, color='lightskyblue', alpha=0.4, label=None, where=(x_hdi >= hdi[0]) & (x_hdi <= hdi[1]))
+
+        # Plot histogram within the HDI
+        hist_within_hdi, bin_edges_within_hdi = np.histogram(permuted_means_condition, bins=50, density=True)
+        bin_centers_within_hdi = 0.5 * (bin_edges_within_hdi[:-1] + bin_edges_within_hdi[1:])
+        axs_hdi[group_idx, i - 1].bar(bin_centers_within_hdi, hist_within_hdi, width=(bin_edges_within_hdi[1] - bin_edges_within_hdi[0]), color='lightskyblue', alpha=0.4)
+
+        # Add lines for HDI limits
+        axs_hdi[group_idx, i - 1].axvline(hdi[0], color='green', linestyle='dotted', linewidth=2, label=None)
+        axs_hdi[group_idx, i - 1].axvline(hdi[1], color='red', linestyle='dotted', linewidth=2, label=None)
+
+        axs_hdi[group_idx, i - 1].set_xlabel('Mean RMSSD')
+        axs_hdi[group_idx, i - 1].set_title(f'{group.capitalize()} - {condition_names[i]}')
+        axs_hdi[group_idx, i - 1].set_ylabel('')  
+        axs_hdi[group_idx, i - 1].legend()
+        axs_hdi[group_idx, i - 1].grid(False)
+
+# Remove empty subplots
+for i in range(1, 5):
+    axs_ci[2, i - 1].remove()
+    axs_ci[3, i - 1].remove()
+    axs_hdi[2, i - 1].remove()
+    axs_hdi[3, i - 1].remove()
+
+# Create legend for CI
+legend_elements_ci = [
+    Line2D([0], [0], color='gray', lw=2, label='Permuted Means', alpha=0.07),
+    Line2D([0], [0], color='black', lw=2, linestyle='dashed', label='Observed Mean'),
+    Line2D([0], [0], color='black', lw=2, linestyle='dotted', label=f'{confidence_level * 100}% CI Lower Bound'),
+    Line2D([0], [0], color='black', lw=2, linestyle='dashdot', label=f'{confidence_level * 100}% CI Upper Bound')
+]
+
+# Add CI legend
+fig_ci.legend(handles=legend_elements_ci, loc='center right')
+fig_ci.subplots_adjust(right=0.9)
+
+# Create legend for HDI
+side_legend_elements_hdi = [
+    Line2D([0], [0], color='black', lw=2, linestyle='solid', label='Observed Mean'),
+    Line2D([0], [0], color='green', lw=2, linestyle='dotted', label='HDI Lower Bound'),
+    Line2D([0], [0], color='red', lw=2, linestyle='dotted', label='HDI Upper Bound')
+]
+
+# Add HDI legend
+fig_hdi.legend(handles=side_legend_elements_hdi, loc='lower center', ncol=5)
+fig_hdi.subplots_adjust(top=0.87)
+
+plt.tight_layout()
+plt.tight_layout()
+plt.subplots_adjust(top=0.90)
+plt.show()
