@@ -26,4 +26,4 @@ It implements statistical analyses related to permutation distributions, confide
 - Ensure data is properly formatted and organized before running the script for accurate results.
 
 ### Contact Information:
-For any inquiries or feedback, please contact Amit Chizick at amitchizick@gmail.com.
+For any inquiries or feedback, please contact Amit Tchizick at amitchizick@gmail.com.
