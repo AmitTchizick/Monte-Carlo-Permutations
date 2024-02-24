@@ -40,7 +40,7 @@ def calculate_cohens_d(observed_mean, permuted_means):
     return (observed_mean - mean_permuted) / pooled_std
 
 # Load data
-data = pd.read_csv(r'/content/sample_data/RMSSD.csv')
+data = pd.read_csv(r'your_path_here.csv')
 
 # Define condition names
 condition_names = {
